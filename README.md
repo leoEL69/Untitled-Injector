@@ -4,7 +4,7 @@ A simple DLL injector written in C++ with a graphical interface for Windows. Thi
 
 ---
 
-![Interface do Untitled Injector](assets/image.png)
+![interface](image.png)
 
 ## Features
 
