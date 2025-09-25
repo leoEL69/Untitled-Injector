@@ -31,5 +31,3 @@ A simple DLL injector written in C++ with a graphical interface for Windows. Thi
    git clone https://github.com/leoEL69/Untitled-Injector.git
 
 
-   <img width="926" height="748" alt="image" src="https://github.com/user-attachments/assets/55d21c9d-8cb0-4101-b7c1-b59ff4ea0f76" />
-
