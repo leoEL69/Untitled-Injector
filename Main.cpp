@@ -304,57 +304,80 @@ bool APCInject(DWORD pid, const wchar_t* dllPath) {
 
 HHOOK g_hHook = NULL;
 
-LRESULT CALLBACK HookProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    return CallNextHookEx(g_hHook, nCode, wParam, lParam);
-}
 
 bool SetWindowsHookInject(DWORD pid, const wchar_t* dllPath) {
- 
-    HMODULE hDll = LoadLibraryW(dllPath);
-    if (!hDll) return false;
+    // Encontrar uma janela do processo para obter a thread ID
+    HWND hwnd = NULL;
+    DWORD tid = 0;
 
+    // Enumerar janelas até encontrar uma do nosso processo
+    HWND currentHwnd = NULL;
+    while ((currentHwnd = FindWindowEx(NULL, currentHwnd, NULL, NULL)) != NULL) {
+        DWORD windowPid;
+        DWORD windowTid = GetWindowThreadProcessId(currentHwnd, &windowPid);
 
-    HOOKPROC pHookProc = (HOOKPROC)GetProcAddress(hDll, "HookProc");
-    if (!pHookProc) {
-        FreeLibrary(hDll);
-        return false;
+        if (windowPid == pid) {
+            hwnd = currentHwnd;
+            tid = windowTid;
+            break;
+        }
     }
 
-   
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE) {
-        FreeLibrary(hDll);
-        return false;
-    }
-
-    THREADENTRY32 te;
-    te.dwSize = sizeof(te);
-    DWORD targetThreadId = 0;
-
-    if (Thread32First(hSnapshot, &te)) {
-        do {
-            if (te.th32OwnerProcessID == pid) {
-                targetThreadId = te.th32ThreadID;
-                break;
+    if (tid == 0) {
+        // Fallback: se não encontrar janela, tenta pegar a thread principal
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (hSnapshot != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te;
+            te.dwSize = sizeof(te);
+            if (Thread32First(hSnapshot, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid) {
+                        tid = te.th32ThreadID;
+                        break;
+                    }
+                } while (Thread32Next(hSnapshot, &te));
             }
-        } while (Thread32Next(hSnapshot, &te));
+            CloseHandle(hSnapshot);
+        }
     }
-    CloseHandle(hSnapshot);
 
-    if (!targetThreadId) {
-        FreeLibrary(hDll);
+    if (tid == 0) {
+        return false; // Não encontrou thread adequada
+    }
+
+    // Carregar DLL
+    HMODULE dll = LoadLibraryExW(dllPath, NULL, DONT_RESOLVE_DLL_REFERENCES);
+    if (dll == NULL) {
         return false;
     }
 
-   
-    g_hHook = SetWindowsHookEx(WH_GETMESSAGE, pHookProc, hDll, targetThreadId);
-    if (!g_hHook) {
-        FreeLibrary(hDll);
-        return false;
+    // Tentar diferentes nomes de função de hook
+    HOOKPROC addr = (HOOKPROC)GetProcAddress(dll, "NextHook");
+    if (addr == NULL) {
+        addr = (HOOKPROC)GetProcAddress(dll, "HookProc");
+        if (addr == NULL) {
+            FreeLibrary(dll);
+            return false;
+        }
     }
 
+    // Definir o hook
+    HHOOK handle = SetWindowsHookEx(WH_GETMESSAGE, addr, dll, tid);
+    if (handle == NULL) {
+        // Tentar WH_CALLWNDPROC como fallback
+        handle = SetWindowsHookEx(WH_CALLWNDPROC, addr, dll, tid);
+        if (handle == NULL) {
+            FreeLibrary(dll);
+            return false;
+        }
+    }
 
-    PostThreadMessage(targetThreadId, WM_NULL, 0, 0);
+    // Trigger do hook
+    PostThreadMessage(tid, WM_NULL, NULL, NULL);
+
+    // Guardar handle global para possível unhook posterior
+    g_hHook = handle;
+
     return true;
 }
 
