@@ -215,7 +215,7 @@ bool ThreadHijackInject(DWORD pid, const wchar_t* dllPath) {
         return false;
     }
 
-    // Allocate memory for DLL path
+    
     LPVOID pRemoteMem = VirtualAllocEx(hProcess, NULL, (wcslen(dllPath) + 1) * sizeof(wchar_t),
         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!pRemoteMem) {
@@ -226,7 +226,7 @@ bool ThreadHijackInject(DWORD pid, const wchar_t* dllPath) {
 
     WriteProcessMemory(hProcess, pRemoteMem, dllPath, (wcslen(dllPath) + 1) * sizeof(wchar_t), NULL);
 
-    // Hijack thread execution
+
     CONTEXT ctx;
     ctx.ContextFlags = CONTEXT_CONTROL;
     SuspendThread(hThread);
@@ -235,17 +235,16 @@ bool ThreadHijackInject(DWORD pid, const wchar_t* dllPath) {
     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
     LPTHREAD_START_ROUTINE pLoadLibrary = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "LoadLibraryW");
 
-    // Save original RIP and set new one
+ 
     DWORD_PTR originalRip = ctx.Rip;
     ctx.Rip = (DWORD_PTR)pLoadLibrary;
 
-    // Set RCX to point to DLL path
+
     ctx.Rcx = (DWORD_PTR)pRemoteMem;
 
     SetThreadContext(hThread, &ctx);
     ResumeThread(hThread);
 
-    // Wait for injection to complete
     WaitForSingleObject(hThread, 5000);
 
     CloseHandle(hThread);
@@ -253,12 +252,12 @@ bool ThreadHijackInject(DWORD pid, const wchar_t* dllPath) {
     return true;
 }
 
-// APC Injection Implementation
+
 bool APCInject(DWORD pid, const wchar_t* dllPath) {
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProcess) return false;
 
-    // Allocate memory for DLL path
+
     LPVOID pRemoteMem = VirtualAllocEx(hProcess, NULL, (wcslen(dllPath) + 1) * sizeof(wchar_t),
         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!pRemoteMem) {
@@ -757,7 +756,7 @@ void ShowWindowType(DWORD pid) {
     std::wstring windowInfo;
     HWND hWnd = NULL;
 
-    // Find windows belonging to this process
+    
     while ((hWnd = FindWindowEx(NULL, hWnd, NULL, NULL)) != NULL) {
         DWORD windowPid;
         GetWindowThreadProcessId(hWnd, &windowPid);
@@ -1082,7 +1081,7 @@ void CreateUIControls(HWND hWnd) {
     for (int i = 0; i < METHOD_TOTAL; i++) SendMessageW(hMethodCombo, CB_ADDSTRING, 0, (LPARAM)methods[i]);
     SendMessageW(hMethodCombo, CB_SETCURSEL, 0, 0);
 
-    hGuideText = CreateWindowW(L"STATIC", L"💉 Untitled DLL Inj - Select process and DLL, then click Inject",
+    hGuideText = CreateWindowW(L"STATIC", L"💉 Untitled DLL Injct - Select process and DLL, then click Inject",
         WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hWnd, NULL, NULL, NULL);
     hDllPathEdit = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY, 0, 0, 0, 0, hWnd, (HMENU)ID_DLL_BROWSE_EDIT, NULL, NULL);
     hBrowseBtn = CreateWindowW(L"BUTTON", L"📂 Browse DLL", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, hWnd, (HMENU)ID_BROWSE_BUTTON, NULL, NULL);
