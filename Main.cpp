@@ -55,6 +55,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define CONTEXT_DUMP_MODULE   2007
 #define CONTEXT_TOGGLE_SUSPEND 2008
 #define CONTEXT_DUMP_PROCESS 2010 
+#define CONTEXT_MODULE_OPEN_LOCATION 2009 
 
 // IDs da Janela de Módulos e Configurações
 #define ID_MODULES_WND   3001
@@ -95,6 +96,12 @@ struct ProcessInfo {
     HANDLE hProcess;
 };
 
+struct ModulesWindowParams {
+    DWORD pid;
+    std::vector<MODULEENTRY32W> modules;
+
+
+};
 // --- Globais ---
 HWND hMainWnd, hProcessList, hInjectBtn, hDllPathEdit, hBrowseBtn, hMethodCombo;
 HWND hSearchEdit, hSearchBtn, hClearBtn, hGuideText, hSettingsBtn;
@@ -783,37 +790,67 @@ void DumpModule(DWORD pid, const MODULEENTRY32W& moduleInfo) {
     MessageBoxW(NULL, successMsg.c_str(), L"✅ Rebuild Successful!", MB_ICONINFORMATION);
 }
 
+void OpenModuleFileLocation(const std::wstring& path) {
+    if (path.empty() || path == L"N/A") {
+        MessageBoxW(NULL, L"The path for this module is not available.", L"Error", MB_ICONERROR);
+        return;
+    }
+    std::wstring command = L"/select,\"" + path + L"\"";
+    ShellExecuteW(NULL, L"open", L"explorer.exe", command.c_str(), NULL, SW_SHOWNORMAL);
+}
 
-
+// --- REPLACE YOUR OLD ShowModules FUNCTION WITH THIS ---
 void ShowModules(DWORD pid) {
-    
     wchar_t existingTitle[256];
-    swprintf(existingTitle, 256, L"Modules (PID: %d)", pid);
+    swprintf_s(existingTitle, L"Modules (PID: %d)", pid);
     HWND hExistingWnd = FindWindowW(L"UntitledModules", existingTitle);
     if (hExistingWnd) {
         SetForegroundWindow(hExistingWnd);
         return;
     }
 
+    // This function now gathers the data itself.
+    ModulesWindowParams* params = new ModulesWindowParams();
+    params->pid = pid;
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (hSnapshot != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32W me;
+        me.dwSize = sizeof(me);
+        if (Module32FirstW(hSnapshot, &me)) {
+            do {
+                params->modules.push_back(me);
+            } while (Module32NextW(hSnapshot, &me));
+        }
+        CloseHandle(hSnapshot);
+    }
+
     wchar_t title[256];
-    swprintf(title, 256, L"Modules (PID: %d)", pid);
+    swprintf_s(title, L"Modules (PID: %d)", pid);
 
     HWND hModuleWnd = CreateWindowExW(
         WS_EX_CLIENTEDGE,
-        L"UntitledModules", 
+        L"UntitledModules",
         title,
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT, CW_USEDEFAULT, 800, 500,
         hMainWnd,
         NULL,
         GetModuleHandle(NULL),
-        (LPVOID)pid 
+        params // Pass the pointer to our struct containing all the data
     );
 
     if (hModuleWnd) {
         ShowWindow(hModuleWnd, SW_SHOW);
     }
+    else {
+        // If window creation fails, clean up the memory we allocated.
+        delete params;
+    }
 }
+
+
+
 void ShowPE(DWORD pid) {
     auto it = std::find_if(g_filteredProcesses.begin(), g_filteredProcesses.end(), [pid](const ProcessInfo& p) { return p.pid == pid; });
     if (it == g_filteredProcesses.end() || it->fullPath == L"N/A") {
@@ -923,14 +960,15 @@ void ShowContextMenu(HWND hwnd, POINT pt) {
 
 
 
+// --- REPLACE YOUR OLD WndProcModules WITH THIS ---
 LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HWND hModuleList = NULL;
-    static DWORD currentPid = 0;
+    static ModulesWindowParams* pParams = NULL; // Store pointer to our params
 
     switch (msg) {
     case WM_CREATE: {
         CREATESTRUCT* pCreate = (CREATESTRUCT*)lParam;
-        currentPid = (DWORD)(pCreate->lpCreateParams);
+        pParams = (ModulesWindowParams*)(pCreate->lpCreateParams); // Get the struct
 
         hModuleList = CreateWindowExW(0, WC_LISTVIEW, L"",
             WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
@@ -948,31 +986,26 @@ LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             ListView_InsertColumn(hModuleList, i, &lvc);
         }
 
-        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, currentPid);
-        if (hSnapshot != INVALID_HANDLE_VALUE) {
-            MODULEENTRY32W me;
-            me.dwSize = sizeof(me);
-            if (Module32FirstW(hSnapshot, &me)) {
-                int index = 0;
-                do {
-                    MODULEENTRY32W* pMe = new MODULEENTRY32W(me);
-                    LVITEMW item = { 0 };
-                    item.mask = LVIF_TEXT | LVIF_PARAM;
-                    item.iItem = index;
-                    item.pszText = me.szModule;
-                    item.lParam = (LPARAM)pMe; 
-                    ListView_InsertItem(hModuleList, &item);
+        // The snapshot is gone. We just loop through the data we were given.
+        int index = 0;
+        if (pParams) {
+            for (const auto& me : pParams->modules) {
+                MODULEENTRY32W* pMe = new MODULEENTRY32W(me); // Still make a copy for the list item
+                LVITEMW item = { 0 };
+                item.mask = LVIF_TEXT | LVIF_PARAM;
+                item.iItem = index;
+                item.pszText = pMe->szModule;
+                item.lParam = (LPARAM)pMe;
+                ListView_InsertItem(hModuleList, &item);
 
-                    wchar_t buffer[64];
-                    swprintf(buffer, 64, L"0x%p", me.modBaseAddr);
-                    ListView_SetItemText(hModuleList, index, 1, buffer);
-                    swprintf(buffer, 64, L"%zu bytes", me.modBaseSize);
-                    ListView_SetItemText(hModuleList, index, 2, buffer);
-                    ListView_SetItemText(hModuleList, index, 3, me.szExePath);
-                    index++;
-                } while (Module32NextW(hSnapshot, &me));
+                wchar_t buffer[64];
+                swprintf_s(buffer, L"0x%p", pMe->modBaseAddr);
+                ListView_SetItemText(hModuleList, index, 1, buffer);
+                swprintf_s(buffer, L"%zu bytes", pMe->modBaseSize);
+                ListView_SetItemText(hModuleList, index, 2, buffer);
+                ListView_SetItemText(hModuleList, index, 3, pMe->szExePath);
+                index++;
             }
-            CloseHandle(hSnapshot);
         }
         break;
     }
@@ -992,6 +1025,8 @@ LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 POINT pt;
                 GetCursorPos(&pt);
                 HMENU hMenu = CreatePopupMenu();
+                AppendMenuW(hMenu, MF_STRING, CONTEXT_MODULE_OPEN_LOCATION, L"📁 Open File Location");
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
                 AppendMenuW(hMenu, MF_STRING, CONTEXT_DUMP_MODULE, L"🚀 Dump Module");
                 TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
                 DestroyMenu(hMenu);
@@ -1001,15 +1036,23 @@ LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     case WM_COMMAND: {
-        if (LOWORD(wParam) == CONTEXT_DUMP_MODULE) {
-            int selectedItem = ListView_GetNextItem(hModuleList, -1, LVNI_SELECTED);
-            if (selectedItem != -1) {
-                LVITEMW item = { 0 };
-                item.mask = LVIF_PARAM;
-                item.iItem = selectedItem;
-                if (ListView_GetItem(hModuleList, &item)) {
-                    MODULEENTRY32W* pMe = (MODULEENTRY32W*)item.lParam;
-                    DumpModule(currentPid, *pMe);
+        int selectedItem = ListView_GetNextItem(hModuleList, -1, LVNI_SELECTED);
+        if (selectedItem != -1) {
+            LVITEMW item = { 0 };
+            item.mask = LVIF_PARAM;
+            item.iItem = selectedItem;
+            if (ListView_GetItem(hModuleList, &item)) {
+                MODULEENTRY32W* pMe = (MODULEENTRY32W*)item.lParam;
+
+                switch (LOWORD(wParam)) {
+                case CONTEXT_MODULE_OPEN_LOCATION:
+                    OpenModuleFileLocation(pMe->szExePath);
+                    break;
+                case CONTEXT_DUMP_MODULE:
+                    if (pParams) {
+                        DumpModule(pParams->pid, *pMe);
+                    }
+                    break;
                 }
             }
         }
@@ -1021,7 +1064,7 @@ LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
 
     case WM_DESTROY: {
-    
+        // Clean up the memory for each list item
         int count = ListView_GetItemCount(hModuleList);
         for (int i = 0; i < count; i++) {
             LVITEMW item = { 0 };
@@ -1030,6 +1073,11 @@ LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (ListView_GetItem(hModuleList, &item)) {
                 delete (MODULEENTRY32W*)item.lParam;
             }
+        }
+        // FUCKING CRITICAL: Clean up the params struct we received
+        if (pParams) {
+            delete pParams;
+            pParams = NULL;
         }
         break;
     }
