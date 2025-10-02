@@ -759,17 +759,16 @@ void DumpModule(DWORD pid, const MODULEENTRY32W& moduleInfo) {
         }
     }
 
-    // --- THIS IS THE UPGRADED PART ---
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(NULL, exePath, MAX_PATH);
     PathRemoveFileSpecW(exePath);
     std::wstring moduleNameStr(moduleInfo.szModule);
     size_t lastDot = moduleNameStr.find_last_of(L'.');
     std::wstring baseName = (lastDot == std::wstring::npos) ? moduleNameStr : moduleNameStr.substr(0, lastDot);
-    std::wstring extension = (lastDot == std::wstring::npos) ? L"" : moduleNameStr.substr(lastDot); // Grab the original extension
-    std::wstring newFileName = baseName + L"_Dump" + extension; // And slap it on the end
+    std::wstring extension = (lastDot == std::wstring::npos) ? L"" : moduleNameStr.substr(lastDot); 
+    std::wstring newFileName = baseName + L"_Dump" + extension; 
     std::wstring dumpFileName = std::wstring(exePath) + L"\\" + newFileName;
-    // --- END OF UPGRADE ---
+  
 
     HANDLE hFile = CreateFileW(dumpFileName.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
@@ -799,7 +798,7 @@ void OpenModuleFileLocation(const std::wstring& path) {
     ShellExecuteW(NULL, L"open", L"explorer.exe", command.c_str(), NULL, SW_SHOWNORMAL);
 }
 
-// --- REPLACE YOUR OLD ShowModules FUNCTION WITH THIS ---
+
 void ShowModules(DWORD pid) {
     wchar_t existingTitle[256];
     swprintf_s(existingTitle, L"Modules (PID: %d)", pid);
@@ -809,7 +808,7 @@ void ShowModules(DWORD pid) {
         return;
     }
 
-    // This function now gathers the data itself.
+
     ModulesWindowParams* params = new ModulesWindowParams();
     params->pid = pid;
 
@@ -837,14 +836,14 @@ void ShowModules(DWORD pid) {
         hMainWnd,
         NULL,
         GetModuleHandle(NULL),
-        params // Pass the pointer to our struct containing all the data
+        params 
     );
 
     if (hModuleWnd) {
         ShowWindow(hModuleWnd, SW_SHOW);
     }
     else {
-        // If window creation fails, clean up the memory we allocated.
+   
         delete params;
     }
 }
@@ -960,15 +959,15 @@ void ShowContextMenu(HWND hwnd, POINT pt) {
 
 
 
-// --- REPLACE YOUR OLD WndProcModules WITH THIS ---
+
 LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HWND hModuleList = NULL;
-    static ModulesWindowParams* pParams = NULL; // Store pointer to our params
+    static ModulesWindowParams* pParams = NULL; 
 
     switch (msg) {
     case WM_CREATE: {
         CREATESTRUCT* pCreate = (CREATESTRUCT*)lParam;
-        pParams = (ModulesWindowParams*)(pCreate->lpCreateParams); // Get the struct
+        pParams = (ModulesWindowParams*)(pCreate->lpCreateParams); 
 
         hModuleList = CreateWindowExW(0, WC_LISTVIEW, L"",
             WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
@@ -986,11 +985,11 @@ LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             ListView_InsertColumn(hModuleList, i, &lvc);
         }
 
-        // The snapshot is gone. We just loop through the data we were given.
+        
         int index = 0;
         if (pParams) {
             for (const auto& me : pParams->modules) {
-                MODULEENTRY32W* pMe = new MODULEENTRY32W(me); // Still make a copy for the list item
+                MODULEENTRY32W* pMe = new MODULEENTRY32W(me); 
                 LVITEMW item = { 0 };
                 item.mask = LVIF_TEXT | LVIF_PARAM;
                 item.iItem = index;
@@ -1064,7 +1063,7 @@ LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
 
     case WM_DESTROY: {
-        // Clean up the memory for each list item
+     
         int count = ListView_GetItemCount(hModuleList);
         for (int i = 0; i < count; i++) {
             LVITEMW item = { 0 };
@@ -1074,7 +1073,7 @@ LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 delete (MODULEENTRY32W*)item.lParam;
             }
         }
-        // FUCKING CRITICAL: Clean up the params struct we received
+
         if (pParams) {
             delete pParams;
             pParams = NULL;
