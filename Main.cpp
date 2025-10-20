@@ -27,7 +27,7 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "dbghelp.lib")
-
+#pragma comment(lib, "version.lib") // ← ADICIONE ESTA LINHA
 #pragma comment(linker,"/manifestdependency:\"type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -62,6 +62,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define ID_MODULES_LIST  3002
 #define ID_MODULES_CLOSE 3003
 #define ID_SETTINGS_UNLOAD_DRIVER 4001
+#define ID_MODULES_FILTER_BTN 4002 // ← ADICIONE ESTA LINHA
 
 
 // Protótipos
@@ -74,6 +75,9 @@ void CreateUIControls(HWND hWnd);
 void ResizeUI(HWND hWnd);
 void SearchProcesses(const std::wstring& query);
 void DumpModule(DWORD pid, const MODULEENTRY32W& moduleInfo);
+
+
+
 
 
 enum InjectionMethod {
@@ -99,9 +103,12 @@ struct ProcessInfo {
 struct ModulesWindowParams {
     DWORD pid;
     std::vector<MODULEENTRY32W> modules;
-
-
+    std::vector<MODULEENTRY32W> allModules; 
+    bool filterWindowsModules; 
 };
+
+
+
 // --- Globais ---
 HWND hMainWnd, hProcessList, hInjectBtn, hDllPathEdit, hBrowseBtn, hMethodCombo;
 HWND hSearchEdit, hSearchBtn, hClearBtn, hGuideText, hSettingsBtn;
@@ -302,7 +309,7 @@ bool SetWindowsHookInject(DWORD pid, const wchar_t* dllPath) {
 
     HOOKPROC addr = (HOOKPROC)GetProcAddress(dll, "NextHook");
     if (addr == NULL) {
-        addr = (HOOKPROC)GetProcAddress(dll, "HookProc");
+        addr = (HOOKPROC)GetProcAddress(dll, "NextHook");
     }
     if (addr == NULL) {
         FreeLibrary(dll);
@@ -808,9 +815,20 @@ void ShowModules(DWORD pid) {
         return;
     }
 
-
     ModulesWindowParams* params = new ModulesWindowParams();
     params->pid = pid;
+    params->filterWindowsModules = false; // ← INICIALMENTE DESLIGADO
+
+    // Obter caminhos do sistema para filtrar módulos do Windows
+    wchar_t systemPath[MAX_PATH], windowsPath[MAX_PATH];
+    GetSystemDirectoryW(systemPath, MAX_PATH);
+    GetWindowsDirectoryW(windowsPath, MAX_PATH);
+
+    // Converter para minúsculas para comparação case-insensitive
+    std::wstring systemPathLower = systemPath;
+    std::wstring windowsPathLower = windowsPath;
+    std::transform(systemPathLower.begin(), systemPathLower.end(), systemPathLower.begin(), ::towlower);
+    std::transform(windowsPathLower.begin(), windowsPathLower.end(), windowsPathLower.begin(), ::towlower);
 
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
     if (hSnapshot != INVALID_HANDLE_VALUE) {
@@ -818,11 +836,14 @@ void ShowModules(DWORD pid) {
         me.dwSize = sizeof(me);
         if (Module32FirstW(hSnapshot, &me)) {
             do {
-                params->modules.push_back(me);
+                params->allModules.push_back(me); // ← SALVA TODOS OS MÓDULOS
             } while (Module32NextW(hSnapshot, &me));
         }
         CloseHandle(hSnapshot);
     }
+
+    // Aplicar filtro inicial (mostrar todos)
+    params->modules = params->allModules;
 
     wchar_t title[256];
     swprintf_s(title, L"Modules (PID: %d)", pid);
@@ -832,18 +853,17 @@ void ShowModules(DWORD pid) {
         L"UntitledModules",
         title,
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, 800, 500,
+        CW_USEDEFAULT, CW_USEDEFAULT, 800, 550, // ← AUMENTEI A ALTURA PARA O BOTÃO
         hMainWnd,
         NULL,
         GetModuleHandle(NULL),
-        params 
+        params
     );
 
     if (hModuleWnd) {
         ShowWindow(hModuleWnd, SW_SHOW);
     }
     else {
-   
         delete params;
     }
 }
@@ -959,133 +979,6 @@ void ShowContextMenu(HWND hwnd, POINT pt) {
 
 
 
-
-LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    static HWND hModuleList = NULL;
-    static ModulesWindowParams* pParams = NULL; 
-
-    switch (msg) {
-    case WM_CREATE: {
-        CREATESTRUCT* pCreate = (CREATESTRUCT*)lParam;
-        pParams = (ModulesWindowParams*)(pCreate->lpCreateParams); 
-
-        hModuleList = CreateWindowExW(0, WC_LISTVIEW, L"",
-            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
-            0, 0, 800, 500, hWnd, (HMENU)ID_MODULES_LIST, GetModuleHandle(NULL), NULL);
-
-        ListView_SetExtendedListViewStyle(hModuleList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-
-        const wchar_t* columns[] = { L"Module Name", L"Base Addr", L"Size", L"Path" };
-        int widths[] = { 180, 120, 100, 350 };
-        LVCOLUMNW lvc = { 0 };
-        lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-        for (int i = 0; i < 4; ++i) {
-            lvc.cx = widths[i];
-            lvc.pszText = (LPWSTR)columns[i];
-            ListView_InsertColumn(hModuleList, i, &lvc);
-        }
-
-        
-        int index = 0;
-        if (pParams) {
-            for (const auto& me : pParams->modules) {
-                MODULEENTRY32W* pMe = new MODULEENTRY32W(me); 
-                LVITEMW item = { 0 };
-                item.mask = LVIF_TEXT | LVIF_PARAM;
-                item.iItem = index;
-                item.pszText = pMe->szModule;
-                item.lParam = (LPARAM)pMe;
-                ListView_InsertItem(hModuleList, &item);
-
-                wchar_t buffer[64];
-                swprintf_s(buffer, L"0x%p", pMe->modBaseAddr);
-                ListView_SetItemText(hModuleList, index, 1, buffer);
-                swprintf_s(buffer, L"%zu bytes", pMe->modBaseSize);
-                ListView_SetItemText(hModuleList, index, 2, buffer);
-                ListView_SetItemText(hModuleList, index, 3, pMe->szExePath);
-                index++;
-            }
-        }
-        break;
-    }
-
-    case WM_SIZE: {
-        RECT rc;
-        GetClientRect(hWnd, &rc);
-        SetWindowPos(hModuleList, NULL, 0, 0, rc.right, rc.bottom, SWP_NOZORDER);
-        break;
-    }
-
-    case WM_NOTIFY: {
-        LPNMHDR nmhdr = (LPNMHDR)lParam;
-        if (nmhdr->idFrom == ID_MODULES_LIST && nmhdr->code == NM_RCLICK) {
-            int selectedItem = ListView_GetNextItem(hModuleList, -1, LVNI_SELECTED);
-            if (selectedItem != -1) {
-                POINT pt;
-                GetCursorPos(&pt);
-                HMENU hMenu = CreatePopupMenu();
-                AppendMenuW(hMenu, MF_STRING, CONTEXT_MODULE_OPEN_LOCATION, L"📁 Open File Location");
-                AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-                AppendMenuW(hMenu, MF_STRING, CONTEXT_DUMP_MODULE, L"🚀 Dump Module");
-                TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
-                DestroyMenu(hMenu);
-            }
-        }
-        break;
-    }
-
-    case WM_COMMAND: {
-        int selectedItem = ListView_GetNextItem(hModuleList, -1, LVNI_SELECTED);
-        if (selectedItem != -1) {
-            LVITEMW item = { 0 };
-            item.mask = LVIF_PARAM;
-            item.iItem = selectedItem;
-            if (ListView_GetItem(hModuleList, &item)) {
-                MODULEENTRY32W* pMe = (MODULEENTRY32W*)item.lParam;
-
-                switch (LOWORD(wParam)) {
-                case CONTEXT_MODULE_OPEN_LOCATION:
-                    OpenModuleFileLocation(pMe->szExePath);
-                    break;
-                case CONTEXT_DUMP_MODULE:
-                    if (pParams) {
-                        DumpModule(pParams->pid, *pMe);
-                    }
-                    break;
-                }
-            }
-        }
-        break;
-    }
-
-    case WM_CLOSE:
-        DestroyWindow(hWnd);
-        break;
-
-    case WM_DESTROY: {
-     
-        int count = ListView_GetItemCount(hModuleList);
-        for (int i = 0; i < count; i++) {
-            LVITEMW item = { 0 };
-            item.mask = LVIF_PARAM;
-            item.iItem = i;
-            if (ListView_GetItem(hModuleList, &item)) {
-                delete (MODULEENTRY32W*)item.lParam;
-            }
-        }
-
-        if (pParams) {
-            delete pParams;
-            pParams = NULL;
-        }
-        break;
-    }
-
-    default:
-        return DefWindowProc(hWnd, msg, wParam, lParam);
-    }
-    return 0;
-}
 
 
 
@@ -1313,7 +1206,324 @@ void RandomizeWindowTitle(HWND hwnd) {
     }
 }
 
-// --- Ponto de Entrada ---
+bool IsMicrosoftModule(const MODULEENTRY32W& module) {
+    std::wstring modulePath = module.szExePath;
+    std::transform(modulePath.begin(), modulePath.end(), modulePath.begin(), ::towlower);
+
+    // Caminhos do sistema Windows
+    wchar_t systemPath[MAX_PATH], windowsPath[MAX_PATH];
+    GetSystemDirectoryW(systemPath, MAX_PATH);
+    GetWindowsDirectoryW(windowsPath, MAX_PATH);
+
+    std::wstring systemPathLower = systemPath;
+    std::wstring windowsPathLower = windowsPath;
+    std::transform(systemPathLower.begin(), systemPathLower.end(), systemPathLower.begin(), ::towlower);
+    std::transform(windowsPathLower.begin(), windowsPathLower.end(), windowsPathLower.begin(), ::towlower);
+
+    // Verificar se está em diretórios do Windows
+    bool isInWindowsDir =
+        (modulePath.find(systemPathLower) != std::wstring::npos) ||
+        (modulePath.find(windowsPathLower) != std::wstring::npos) ||
+        (modulePath.find(L"\\windows\\") != std::wstring::npos) ||
+        (modulePath.find(L"\\system32\\") != std::wstring::npos) ||
+        (modulePath.find(L"\\syswow64\\") != std::wstring::npos) ||
+        (modulePath.find(L"\\winsxs\\") != std::wstring::npos);
+
+    if (!isInWindowsDir) {
+        return false; // Não está em diretório do Windows
+    }
+
+    // Agora verificar a assinatura digital
+    bool isMicrosoftSigned = false;
+
+    // Tentar obter informações de versão e assinatura
+    DWORD versionHandle = 0;
+    DWORD versionSize = GetFileVersionInfoSizeW(module.szExePath, &versionHandle);
+
+    if (versionSize > 0) {
+        BYTE* versionInfo = new BYTE[versionSize];
+        if (GetFileVersionInfoW(module.szExePath, 0, versionSize, versionInfo)) {
+            // Verificar informações da empresa
+            struct LANGANDCODEPAGE {
+                WORD wLanguage;
+                WORD wCodePage;
+            } *lpTranslate;
+
+            UINT cbTranslate = 0;
+
+            if (VerQueryValueW(versionInfo, L"\\VarFileInfo\\Translation", (LPVOID*)&lpTranslate, &cbTranslate)) {
+                for (UINT i = 0; i < (cbTranslate / sizeof(LANGANDCODEPAGE)); i++) {
+                    wchar_t subBlock[256];
+                    swprintf_s(subBlock, L"\\StringFileInfo\\%04x%04x\\CompanyName",
+                        lpTranslate[i].wLanguage, lpTranslate[i].wCodePage);
+
+                    wchar_t* companyName = nullptr;
+                    UINT len = 0;
+
+                    if (VerQueryValueW(versionInfo, subBlock, (LPVOID*)&companyName, &len) && companyName && len > 0) {
+                        std::wstring company = companyName;
+                        std::transform(company.begin(), company.end(), company.begin(), ::towlower);
+
+                        // Verificar empresas Microsoft
+                        if (company.find(L"microsoft") != std::wstring::npos ||
+                            company.find(L"microsoft corporation") != std::wstring::npos) {
+                            isMicrosoftSigned = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        delete[] versionInfo;
+    }
+
+    // Se não conseguiu verificar pela versão, verificar por nomes comuns da Microsoft
+    if (!isMicrosoftSigned) {
+        std::wstring moduleName = module.szModule;
+        std::transform(moduleName.begin(), moduleName.end(), moduleName.begin(), ::towlower);
+
+        // Lista de DLLs conhecidas da Microsoft
+        const std::vector<std::wstring> microsoftDlls = {
+            L"kernel32.dll", L"user32.dll", L"ntdll.dll", L"advapi32.dll",
+            L"gdi32.dll", L"shell32.dll", L"msvcrt.dll", L"ole32.dll",
+            L"rpcrt4.dll", L"comctl32.dll", L"shlwapi.dll", L"ws2_32.dll",
+            L"wininet.dll", L"urlmon.dll", L"crypt32.dll", L"secur32.dll",
+            L"imm32.dll", L"msctf.dll", L"dwmapi.dll", L"uxtheme.dll",
+            L"version.dll", L"psapi.dll", L"dbghelp.dll", L"imagehlp.dll",
+            L"iphlpapi.dll", L"netapi32.dll", L"powrprof.dll", L"setupapi.dll",
+            L"wtsapi32.dll", L"avicap32.dll", L"winmm.dll", L"msacm32.dll",
+            L"winspool.drv", L"comdlg32.dll", L"oleaut32.dll", L"propsys.dll"
+        };
+
+        for (const auto& knownDll : microsoftDlls) {
+            if (moduleName == knownDll) {
+                isMicrosoftSigned = true;
+                break;
+            }
+        }
+    }
+
+    return isMicrosoftSigned;
+}
+
+
+
+void RefreshModulesList(HWND hModuleList, ModulesWindowParams* pParams) {
+    if (!hModuleList || !pParams) return;
+
+    // Limpar lista atual
+    ListView_DeleteAllItems(hModuleList);
+
+    // Limpar memória dos itens anteriores
+    int count = ListView_GetItemCount(hModuleList);
+    for (int i = 0; i < count; i++) {
+        LVITEMW item = { 0 };
+        item.mask = LVIF_PARAM;
+        item.iItem = i;
+        if (ListView_GetItem(hModuleList, &item)) {
+            delete (MODULEENTRY32W*)item.lParam;
+        }
+    }
+
+    // Aplicar filtro se necessário
+    pParams->modules.clear();
+    for (const auto& me : pParams->allModules) {
+        if (pParams->filterWindowsModules) {
+            // Filtrar módulos da Microsoft
+            if (!IsMicrosoftModule(me)) {
+                pParams->modules.push_back(me);
+            }
+        }
+        else {
+            // Mostrar todos os módulos
+            pParams->modules.push_back(me);
+        }
+    }
+
+    // Popular a lista
+    int index = 0;
+    for (const auto& me : pParams->modules) {
+        MODULEENTRY32W* pMe = new MODULEENTRY32W(me);
+        LVITEMW item = { 0 };
+        item.mask = LVIF_TEXT | LVIF_PARAM;
+        item.iItem = index;
+        item.pszText = pMe->szModule;
+        item.lParam = (LPARAM)pMe;
+        ListView_InsertItem(hModuleList, &item);
+
+        wchar_t buffer[64];
+        swprintf_s(buffer, L"0x%p", pMe->modBaseAddr);
+        ListView_SetItemText(hModuleList, index, 1, buffer);
+        swprintf_s(buffer, L"%zu bytes", pMe->modBaseSize);
+        ListView_SetItemText(hModuleList, index, 2, buffer);
+
+        // Adicionar indicação se é módulo Microsoft
+        std::wstring pathDisplay = pMe->szExePath;
+        if (IsMicrosoftModule(me)) {
+            pathDisplay += L" [Microsoft]";
+        }
+        ListView_SetItemText(hModuleList, index, 3, const_cast<wchar_t*>(pathDisplay.c_str()));
+
+        index++;
+    }
+
+    // Atualizar título da janela
+    wchar_t title[256];
+    if (pParams->filterWindowsModules) {
+        swprintf_s(title, L"Modules (PID: %d) - Non-Microsoft Only [%d modules]",
+            pParams->pid, pParams->modules.size());
+    }
+    else {
+        swprintf_s(title, L"Modules (PID: %d) - All Modules [%d modules]",
+            pParams->pid, pParams->modules.size());
+    }
+    SetWindowTextW(GetParent(hModuleList), title);
+}
+
+
+
+LRESULT CALLBACK WndProcModules(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static HWND hModuleList = NULL;
+    static HWND hFilterBtn = NULL; // ← ADICIONE ESTA LINHA
+    static ModulesWindowParams* pParams = NULL;
+
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCT* pCreate = (CREATESTRUCT*)lParam;
+        pParams = (ModulesWindowParams*)(pCreate->lpCreateParams);
+
+        // Criar botão de filtro
+        hFilterBtn = CreateWindowW(L"BUTTON", L"🔍 Filtrar Módulos Windows",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            10, 10, 200, 30,
+            hWnd, (HMENU)ID_MODULES_FILTER_BTN, GetModuleHandle(NULL), NULL);
+
+        SendMessage(hFilterBtn, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+
+        // Criar lista de módulos (abaixo do botão)
+        hModuleList = CreateWindowExW(0, WC_LISTVIEW, L"",
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+            0, 50, 800, 450, hWnd, (HMENU)ID_MODULES_LIST, GetModuleHandle(NULL), NULL);
+
+        ListView_SetExtendedListViewStyle(hModuleList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+
+        const wchar_t* columns[] = { L"Module Name", L"Base Addr", L"Size", L"Path" };
+        int widths[] = { 180, 120, 100, 350 };
+        LVCOLUMNW lvc = { 0 };
+        lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+        for (int i = 0; i < 4; ++i) {
+            lvc.cx = widths[i];
+            lvc.pszText = (LPWSTR)columns[i];
+            ListView_InsertColumn(hModuleList, i, &lvc);
+        }
+
+        // Popular a lista com os módulos
+        RefreshModulesList(hModuleList, pParams);
+        break;
+    }
+
+    case WM_SIZE: {
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        SetWindowPos(hFilterBtn, NULL, 10, 10, 200, 30, SWP_NOZORDER);
+        SetWindowPos(hModuleList, NULL, 0, 50, rc.right, rc.bottom - 50, SWP_NOZORDER);
+        break;
+    }
+
+    case WM_COMMAND: {
+        if (LOWORD(wParam) == ID_MODULES_FILTER_BTN) {
+            // Alternar o filtro
+            if (pParams) {
+                pParams->filterWindowsModules = !pParams->filterWindowsModules;
+
+                // Atualizar o texto do botão
+                if (pParams->filterWindowsModules) {
+                    SetWindowTextW(hFilterBtn, L"🔍 Mostrar Todos Módulos");
+                }
+                else {
+                    SetWindowTextW(hFilterBtn, L"🔍 Filtrar Módulos Windows");
+                }
+
+                // Atualizar a lista
+                RefreshModulesList(hModuleList, pParams);
+            }
+        }
+        else {
+            // Código existente para o menu de contexto...
+            int selectedItem = ListView_GetNextItem(hModuleList, -1, LVNI_SELECTED);
+            if (selectedItem != -1) {
+                LVITEMW item = { 0 };
+                item.mask = LVIF_PARAM;
+                item.iItem = selectedItem;
+                if (ListView_GetItem(hModuleList, &item)) {
+                    MODULEENTRY32W* pMe = (MODULEENTRY32W*)item.lParam;
+
+                    switch (LOWORD(wParam)) {
+                    case CONTEXT_MODULE_OPEN_LOCATION:
+                        OpenModuleFileLocation(pMe->szExePath);
+                        break;
+                    case CONTEXT_DUMP_MODULE:
+                        if (pParams) {
+                            DumpModule(pParams->pid, *pMe);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        break;
+    }
+
+                   // ... (restante do código permanece igual)
+    case WM_NOTIFY: {
+        LPNMHDR nmhdr = (LPNMHDR)lParam;
+        if (nmhdr->idFrom == ID_MODULES_LIST && nmhdr->code == NM_RCLICK) {
+            int selectedItem = ListView_GetNextItem(hModuleList, -1, LVNI_SELECTED);
+            if (selectedItem != -1) {
+                POINT pt;
+                GetCursorPos(&pt);
+                HMENU hMenu = CreatePopupMenu();
+                AppendMenuW(hMenu, MF_STRING, CONTEXT_MODULE_OPEN_LOCATION, L"📁 Open File Location");
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+                AppendMenuW(hMenu, MF_STRING, CONTEXT_DUMP_MODULE, L"🚀 Dump Module");
+                TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
+                DestroyMenu(hMenu);
+            }
+        }
+        break;
+    }
+
+    case WM_CLOSE:
+        DestroyWindow(hWnd);
+        break;
+
+    case WM_DESTROY: {
+        // Limpar memória
+        int count = ListView_GetItemCount(hModuleList);
+        for (int i = 0; i < count; i++) {
+            LVITEMW item = { 0 };
+            item.mask = LVIF_PARAM;
+            item.iItem = i;
+            if (ListView_GetItem(hModuleList, &item)) {
+                delete (MODULEENTRY32W*)item.lParam;
+            }
+        }
+
+        if (pParams) {
+            delete pParams;
+            pParams = NULL;
+        }
+        break;
+    }
+
+    default:
+        return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+    return 0;
+
+
+}
+
 // --- Ponto de Entrada ---
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
     InitCommonControls();
